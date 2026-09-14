@@ -1,0 +1,34 @@
+VSLINK — PROPRIETARY SOFTWARE LICENSE
+Copyright (c) 2026 VSLink. All rights reserved.
+
+This software and associated documentation files (the "Software") are proprietary
+and confidential. The Software is protected by copyright law and international
+treaties.
+
+GRANT OF LICENSE
+Subject to the terms of this license and payment of applicable subscription fees,
+VSLink grants you a limited, non-exclusive, non-transferable, revocable
+license to install and use the Software solely for your personal or internal
+business purposes through the VS Code Marketplace.
+
+RESTRICTIONS
+You may NOT:
+  - Copy, reproduce, or distribute the Software or its source code
+  - Modify, adapt, translate, or create derivative works
+  - Reverse engineer, decompile, or disassemble the Software
+  - Sublicense, sell, resell, transfer, or otherwise commercially exploit the Software
+  - Remove or alter any proprietary notices, labels, or marks
+  - Use the Software beyond the scope of your active subscription
+
+SUBSCRIPTION
+Use of the cloud service features requires an active paid subscription.
+Subscriptions are managed at https://vslink.dev.
+Termination of subscription terminates the right to use cloud features.
+
+DISCLAIMER
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL VSLINK BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+CONTACT
+For licensing enquiries: https://vslink.dev

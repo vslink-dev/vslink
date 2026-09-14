@@ -1,0 +1,102 @@
+{
+  "name": "vslink-copilot",
+  "displayName": "Vslink Copilot",
+  "description": "Connect one VS Code workspace to your paired browser and access its GitHub Copilot conversations while connected.",
+  "version": "1.1.0",
+  "publisher": "vslink",
+  "icon": "media/icon.png",
+  "readme": "README.md",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dev-tahir/vscode-link"
+  },
+  "homepage": "https://vslink.dev",
+  "bugs": {
+    "url": "https://github.com/dev-tahir/vscode-link/issues"
+  },
+  "keywords": [
+    "mobile",
+    "remote",
+    "chat",
+    "copilot",
+    "phone"
+  ],
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "pricing": "Trial",
+  "activationEvents": [
+    "onView:remoteChatControl.sidebar",
+    "onCommand:remoteChatControl.connectCloud",
+    "onCommand:remoteChatControl.disconnectCloud",
+    "onCommand:remoteChatControl.signIn",
+    "onCommand:remoteChatControl.logout",
+    "onCommand:remoteChatControl.showOutput",
+    "onUri"
+  ],
+  "main": "./src/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "VSLink only connects a workspace after you trust it and explicitly approve the connection."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "remoteChatControl",
+          "title": "Vslink Copilot",
+          "icon": "media/sidebar-icon.png"
+        }
+      ]
+    },
+    "views": {
+      "remoteChatControl": [
+        {
+          "id": "remoteChatControl.sidebar",
+          "name": "Vslink Copilot",
+          "type": "webview",
+          "icon": "media/sidebar-icon.png"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "remoteChatControl.connectCloud",
+        "title": "Vslink Copilot: Connect Current Workspace",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "remoteChatControl.disconnectCloud",
+        "title": "Vslink Copilot: Disconnect Current Workspace",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "remoteChatControl.signIn",
+        "title": "Vslink Copilot: Pair Account",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "remoteChatControl.logout",
+        "title": "Vslink Copilot: Unpair This Editor",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "remoteChatControl.showOutput",
+        "title": "Vslink Copilot: Show Connection Log"
+      }
+    ]
+  },
+  "scripts": {
+    "check": "node testing/check-source.js",
+    "test": "npm run check && node testing/test-new-chat.js && node testing/test-connect-dialog.js && node testing/test-sidebar.js"
+  },
+  "dependencies": {
+    "ws": "8.21.3"
+  }
+}

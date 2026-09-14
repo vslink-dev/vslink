@@ -1,0 +1,21 @@
+# Dependencies and generated packages
+node_modules/
+out/
+dist/
+build/
+coverage/
+*.vsix
+*.tsbuildinfo
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+*.log
