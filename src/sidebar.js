@@ -116,7 +116,7 @@ class SidebarProvider {
         <p>Connect shows this workspace’s saved Copilot chats in your paired browser, including earlier conversations. Your browser can send prompts using the model and permissions you choose in VS Code.</p>
         <p>The relay receives visible prompts and finished answers (including canceled or failed responses), workspace name and identifier, conversation and request IDs, titles, timestamps, status, and available model and usage details.</p>
         <p>Standalone file, terminal, Git, attachment, tool, and hidden-reasoning payloads are excluded. Anything written into visible chat text is included. Copilot may use tools or edit files in response to your prompts, subject to your VS Code permissions.</p>
-        <p>The relay can read forwarded content; this release is not end-to-end encrypted. Production uses TLS. Localhost testing may use unencrypted loopback connections.</p>
+        <p>Production currently protects transport with TLS. Client-side end-to-end encryption is planned; until that update ships, the relay processes forwarded content to deliver it. Localhost testing may use an unencrypted loopback connection.</p>
         <p>Your pairing credential is saved in VS Code SecretStorage. Account name and email are saved in local extension settings. Unpair removes the local credential; server revocation is not implemented.</p>
         <p>A paid VSLink subscription is required. There is no free trial.</p>
       </div>

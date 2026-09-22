@@ -1,7 +1,7 @@
 {
   "name": "vslink-copilot",
   "displayName": "Vslink Copilot",
-  "description": "Access your workspace's GitHub Copilot conversations from a paired browser. Requires a paid VSLink subscription; no free trial.",
+  "description": "Continue the GitHub Copilot Chat running in VS Code from a paired browser. Paid VSLink subscription required; no free trial.",
   "version": "1.1.0",
   "publisher": "vslink",
   "icon": "media/icon.png",
@@ -9,11 +9,11 @@
   "license": "SEE LICENSE IN LICENSE.txt",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dev-tahir/vscode-link"
+    "url": "https://github.com/vslink-dev/vslink"
   },
   "homepage": "https://vslink.dev",
   "bugs": {
-    "url": "https://github.com/dev-tahir/vscode-link/issues"
+    "url": "https://github.com/vslink-dev/vslink/issues"
   },
   "keywords": [
     "mobile",

@@ -36,7 +36,7 @@ async function registered(target) {
     assert.equal(target.client.connected, false, 'open transport is not authenticated registration');
     socket.message({ type: 'request_registration' });
     assert.equal(socket.sent[0].type, 'register_extension');
-    assert.equal(socket.sent[0].linkToken, token, 'credential remains in the registration body for local protocol compatibility');
+    assert.equal(socket.sent[0].linkToken, undefined, 'credential is used only in the WebSocket Authorization header');
     socket.message({ type: 'registration_confirmed', userName: 'Fixture' });
     await tick();
     assert.equal(target.client.connected, true);
@@ -77,7 +77,7 @@ async function main() {
     await tick();
     assert.match(malformed.failures[0].message, /malformed JSON/);
     assert.ok(malformed.failures[0].cause, 'parse cause is preserved');
-    const rejected = setup('wss://vscode-relay.tahiraziztaran.workers.dev/extension');
+    const rejected = setup('wss://relay.vslink.dev/extension');
     rejected.client.start();
     const count = sockets.length;
     sockets.at(-1).emit('unexpected-response', {}, { statusCode: 401, resume() {} });

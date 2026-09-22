@@ -12,7 +12,9 @@ assert.equal(manifest.main, './src/extension.js');
 assert.equal(manifest.__metadata, undefined);
 assert.equal(manifest.engines.vscode, '^1.137.0');
 assert.equal(manifest.pricing, 'Free');
-assert.match(manifest.description, /paid VSLink subscription; no free trial/);
+assert.match(manifest.description, /Paid VSLink subscription required; no free trial/);
+assert.equal(manifest.repository.url, 'https://github.com/vslink-dev/vslink');
+assert.equal(manifest.bugs.url, 'https://github.com/vslink-dev/vslink/issues');
 assert.deepEqual(manifest.dependencies, { ws: '8.21.3' });
 for (const asset of [manifest.main, manifest.icon, manifest.readme, 'LICENSE.txt',
     ...manifest.contributes.viewsContainers.activitybar.map(view => view.icon)]) {

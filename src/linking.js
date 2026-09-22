@@ -1,6 +1,6 @@
 'use strict';
 const DEFAULT_WEBSITE_ORIGIN = 'https://vslink.dev';
-const DEFAULT_RELAY_URL = 'wss://vscode-relay.tahiraziztaran.workers.dev/extension';
+const DEFAULT_RELAY_URL = 'wss://relay.vslink.dev/extension';
 
 function parseEndpoint(raw, label) {
     if (typeof raw !== 'string' || !raw || raw !== raw.trim()) {

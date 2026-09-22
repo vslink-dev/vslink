@@ -257,7 +257,6 @@ class CloudClient {
             workspaceHash: this.workspace.hash,
             workspaceName: this.workspace.name,
             workspacePath: '',
-            linkToken: this.token,
             alwaysConnected: false,
             timestamp: Date.now()
         });
