@@ -1,6 +1,6 @@
 "use strict";
 const WebSocket = require("ws");
-exports.RELAY_URL = 'wss://vscode-relay.tahiraziztaran.workers.dev/extension';
+const { validateRelayUrl } = require('./linking');
 const MAX_INCOMING_BYTES = 256 * 1024;
 const MAX_OUTGOING_BYTES = 5 * 1024 * 1024;
 const HEARTBEAT_INTERVAL_MS = 25000;
@@ -15,7 +15,7 @@ const ALLOWED_COMMANDS = new Set([
     'send_and_wait'
 ]);
 class CloudClient {
-    constructor(log, workspace, token, callbacks, relayUrl = exports.RELAY_URL) {
+    constructor(log, workspace, token, callbacks, relayUrl) {
         this.log = log;
         this.workspace = workspace;
         this.token = token;
@@ -28,6 +28,9 @@ class CloudClient {
     start() {
         if (this.active)
             return;
+        this.relayUrl = validateRelayUrl(this.relayUrl);
+        if (typeof this.token !== 'string' || !/^[a-fA-F0-9]{64}$/.test(this.token))
+            throw new Error('Saved VSLink credential is invalid. Unpair this editor and pair again.');
         this.active = true;
         this.reconnectAttempt = 0;
         this.open(false);
@@ -36,15 +39,12 @@ class CloudClient {
         this.active = false;
         this.clearReconnect();
         this.stopHeartbeat();
+        this.clearRegistration();
         const socket = this.socket;
         this.socket = undefined;
         if (socket && socket.readyState !== WebSocket.CLOSED) {
-            try {
-                socket.close(1000, 'manual disconnect');
-            }
-            catch {
-                socket.terminate();
-            }
+            if (socket.readyState === WebSocket.CONNECTING) socket.terminate();
+            else socket.close(1000, 'manual disconnect');
         }
         this.setState('disconnected');
     }
@@ -54,7 +54,8 @@ class CloudClient {
     sendInboxUpdate(inbox = this.callbacks.getInbox()) {
         if (!this.connected)
             return;
-        this.send({ type: 'inbox_update', data: inbox, timestamp: Date.now() });
+        try { this.send({ type: 'inbox_update', data: inbox, timestamp: Date.now() }); }
+        catch (error) { this.fail(error); }
     }
     open(reconnecting) {
         if (!this.active)
@@ -64,10 +65,8 @@ class CloudClient {
         let socket;
         try {
             const url = new URL(this.relayUrl);
-            // The current relay requires this during the WebSocket upgrade. TLS
-            // protects it in transit and this extension never logs the full URL.
-            // Server work will replace it with short-lived header authentication.
-            url.searchParams.set('token', this.token);
+            // Credentials never go in URLs. Production workers must accept this
+            // header before deploying this extension; rejection is not retried via a URL token.
             socket = new WebSocket(url, {
                 headers: { Authorization: `Bearer ${this.token}` },
                 handshakeTimeout: 15000,
@@ -77,72 +76,98 @@ class CloudClient {
             });
         }
         catch (error) {
-            this.log(`Connection setup failed: ${safeError(error)}`);
-            this.scheduleReconnect();
+            this.fail(new Error('Connection setup failed. Check the saved relay address.', { cause: error }));
             return;
         }
         this.socket = socket;
+        this.registrationSent = false;
+        this.registrationPending = false;
         socket.on('open', () => {
             if (!this.active || this.socket !== socket) {
                 socket.close(1000, 'inactive');
                 return;
             }
-            this.reconnectAttempt = 0;
-            this.setState('connected');
-            this.startHeartbeat();
-            this.log('Connected securely to the VSLink relay.');
+            this.registrationTimer = setTimeout(() => {
+                if (this.socket === socket) this.fail(new Error('Relay registration timed out. Check server authentication and pair again.'));
+            }, 15000);
+            this.registrationTimer.unref?.();
         });
         socket.on('message', (data, isBinary) => {
+            if (!this.active || this.socket !== socket) return;
             if (isBinary) {
-                this.log('Ignored an unexpected binary relay message.');
+                this.fail(new Error('Relay sent an unsupported binary message.'));
                 return;
             }
             const buffer = rawDataBuffer(data);
             if (buffer.length > MAX_INCOMING_BYTES) {
-                this.log('Closed relay connection after an oversized message.');
-                socket.close(1009, 'message too large');
+                this.fail(new Error('Relay message exceeds the size limit.'));
                 return;
             }
-            void this.handleMessage(buffer.toString('utf8'));
+            void this.handleMessage(buffer.toString('utf8'), socket).catch(error => {
+                if (this.socket === socket) this.fail(error);
+            });
         });
         socket.on('unexpected-response', (_request, response) => {
-            this.log(`Relay rejected the connection (HTTP ${response.statusCode || 'unknown'}).`);
             response.resume();
+            if (this.socket === socket) this.fail(new Error(`Relay rejected the connection (HTTP ${response.statusCode}). Check pairing and ensure the worker accepts Authorization headers; URL-token authentication is not used.`));
         });
         socket.on('error', error => {
+            if (!this.active || this.socket !== socket) return;
+            this.lastError = error;
+            if (/CERT|TLS|SSL|WS_ERR/.test(String(error.code))) {
+                this.fail(new Error(`Relay security or protocol check failed (${error.code}). Fix the certificate or protocol before reconnecting.`, { cause: error }));
+                return;
+            }
             this.log(`Relay connection error: ${safeError(error)}`);
         });
         socket.on('close', code => {
-            if (this.socket === socket)
-                this.socket = undefined;
+            if (this.socket !== socket) return;
+            this.socket = undefined;
             this.stopHeartbeat();
+            this.clearRegistration();
             if (!this.active) {
                 this.setState('disconnected');
                 return;
             }
-            this.log(`Relay connection closed (code ${code || 1006}); retrying while this session remains connected.`);
+            if (![1000, 1001, 1006, 1011, 1012, 1013].includes(code)) {
+                this.fail(new Error(`Relay closed the connection with code ${code}. Check the connection log and server before reconnecting.`));
+                return;
+            }
+            this.log(`Relay connection closed (code ${code}); reconnecting within the manually approved session.`);
             this.scheduleReconnect();
         });
     }
-    async handleMessage(raw) {
+    async handleMessage(raw, socket = this.socket) {
         let message;
         try {
             message = JSON.parse(raw);
         }
-        catch {
-            this.log('Ignored malformed relay JSON.');
-            return;
+        catch (cause) {
+            throw new Error('Relay sent malformed JSON.', { cause });
         }
         if (!message || typeof message.type !== 'string')
-            return;
+            throw new Error('Relay message has no type.');
+        if (!this.connected && !['request_registration', 'registration_confirmed', 'registration_denied', 'ping', 'pong'].includes(message.type))
+            throw new Error('Relay attempted to access chat before registration completed.');
         switch (message.type) {
             case 'request_registration':
+                if (this.registrationSent) throw new Error('Relay requested duplicate registration.');
                 this.sendRegistration();
                 return;
             case 'registration_confirmed':
-                this.callbacks.onAccountInfo(safeOptionalString(message.userName), safeOptionalString(message.userEmail));
+                if (!this.registrationSent || this.connected || this.registrationPending) throw new Error('Unexpected relay registration confirmation.');
+                this.registrationPending = true;
+                await this.callbacks.onAccountInfo(safeOptionalString(message.userName), safeOptionalString(message.userEmail));
+                if (!this.active || this.socket !== socket) return;
+                this.clearRegistration();
+                this.reconnectAttempt = 0;
+                this.setState('connected');
+                this.startHeartbeat();
+                this.log(new URL(this.relayUrl).protocol === 'wss:' ? 'Connected to the VSLink relay using TLS.' : 'Connected to the local VSLink server (unencrypted loopback connection).');
                 this.sendInboxUpdate();
                 return;
+            case 'registration_denied':
+                throw new Error('Relay denied this pairing. Unpair this editor, check your account, and pair again.');
             case 'request_inbox':
                 this.sendInboxUpdate();
                 return;
@@ -152,25 +177,17 @@ class CloudClient {
             case 'pong':
             case 'heartbeat_ack':
                 return;
-            case 'send_message': {
-                const prompt = validPrompt(message.message);
-                if (!prompt) {
-                    this.log('Rejected an empty or oversized remote chat prompt.');
-                    return;
-                }
-                await this.runRequest(undefined, () => this.callbacks.sendChat(prompt));
-                return;
-            }
             case 'execute_command':
                 await this.handleCommand(message);
                 return;
             default:
-                this.log(`Ignored unsupported relay message type: ${safeLogValue(message.type)}`);
+                throw new Error(`Unsupported relay message type: ${safeLogValue(message.type)}. Use the request/response chat protocol.`);
         }
     }
     async handleCommand(message) {
         const command = typeof message.command === 'string' ? message.command : '';
         const requestId = validRequestId(message.requestId);
+        if (requestId === undefined) throw new Error('Remote command requires a valid numeric request ID. No command was executed.');
         if (!ALLOWED_COMMANDS.has(command)) {
             this.log(`Blocked unsupported remote command: ${safeLogValue(command || '(missing)')}`);
             this.respond(requestId, { error: 'This VSLink edition only allows Copilot chat.' });
@@ -192,7 +209,7 @@ class CloudClient {
                         instances: [this.instanceMetadata()]
                     };
                 case 'get_chat_models':
-                    return { success: true, models: [], note: 'VSLink uses the active model in VS Code Copilot Chat.' };
+                    throw new Error('Remote model selection is not supported. Choose the model in VS Code Copilot Chat.');
                 case 'start_chat':
                 case 'send_chat': {
                     const prompt = validPrompt(message.data?.message);
@@ -211,15 +228,21 @@ class CloudClient {
         });
     }
     async runRequest(requestId, action) {
+        const socket = this.socket;
+        let result;
         try {
-            const result = await action();
-            this.respond(requestId, result);
+            result = await action();
         }
         catch (error) {
             const detail = safeError(error);
             this.log(`Chat request failed: ${detail}`);
-            this.respond(requestId, { error: detail, ...(error.delivery === 'not_submitted' ? { delivery: 'not_submitted' } : {}) });
+            result = { error: detail, ...(error.delivery === 'not_submitted' ? { delivery: 'not_submitted' } : {}) };
         }
+        if (this.socket !== socket) {
+            this.log('Connection changed during a chat request; its result was not sent to a different connection. Check VS Code before retrying.');
+            return;
+        }
+        this.respond(requestId, result);
     }
     respond(requestId, data) {
         if (requestId === undefined)
@@ -227,6 +250,7 @@ class CloudClient {
         this.send({ type: 'proxy_response', requestId, data, timestamp: Date.now() });
     }
     sendRegistration() {
+        this.registrationSent = true;
         this.send({
             type: 'register_extension',
             instanceId: this.workspace.hash,
@@ -252,25 +276,22 @@ class CloudClient {
     }
     send(payload) {
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN)
-            return false;
-        try {
-            const encoded = JSON.stringify(payload);
-            if (Buffer.byteLength(encoded) > MAX_OUTGOING_BYTES) {
-                this.log('Blocked an oversized outbound relay message.');
-                return false;
-            }
-            this.socket.send(encoded);
-            return true;
+            throw new Error('Relay is not open; the message was not sent.');
+        const socket = this.socket;
+        const encoded = JSON.stringify(payload);
+        if (Buffer.byteLength(encoded) > MAX_OUTGOING_BYTES) {
+            throw new Error('Outbound relay message exceeds the size limit; it was not sent.');
         }
-        catch (error) {
-            this.log(`Relay send failed: ${safeError(error)}`);
-            return false;
-        }
+        socket.send(encoded, error => {
+            if (error && this.socket === socket) this.fail(new Error('Relay send failed. Check the connection before retrying.', { cause: error }));
+        });
+        return true;
     }
     startHeartbeat() {
         this.stopHeartbeat();
         this.heartbeat = setInterval(() => {
-            this.send({ type: 'heartbeat', timestamp: Date.now() });
+            try { this.send({ type: 'heartbeat', timestamp: Date.now() }); }
+            catch (error) { this.fail(error); }
         }, HEARTBEAT_INTERVAL_MS);
         this.heartbeat.unref?.();
     }
@@ -278,6 +299,16 @@ class CloudClient {
         if (this.heartbeat)
             clearInterval(this.heartbeat);
         this.heartbeat = undefined;
+    }
+    clearRegistration() {
+        clearTimeout(this.registrationTimer);
+        this.registrationTimer = undefined;
+    }
+    fail(error) {
+        this.lastError = error;
+        this.log(`VSLink connection stopped: ${safeError(error)}`);
+        this.stop();
+        this.callbacks.onFailure?.(error);
     }
     scheduleReconnect() {
         if (!this.active || this.reconnectTimer)
@@ -315,16 +346,18 @@ function validRequestId(value) {
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 function safeWait(value) {
-    const wait = Number(value);
-    if (!Number.isFinite(wait))
-        return undefined;
-    return Math.min(Math.max(Math.floor(wait), 5000), 180000);
+    if (value === undefined) return undefined;
+    if (!Number.isSafeInteger(value) || value < 5000 || value > 180000)
+        throw new Error('Reply wait must be an integer between 5000 and 180000 milliseconds.');
+    return value;
 }
 function safeOptionalString(value) {
-    return typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : null;
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string' || value.length > 200) throw new Error('Relay returned invalid account information.');
+    return value.trim() || null;
 }
 function safeLogValue(value) {
-    return value.replace(/[\r\n\t]/g, ' ').slice(0, 120);
+    return value.replace(/[a-fA-F0-9]{64}/g, '[credential redacted]').replace(/[\r\n\t]/g, ' ').slice(0, 240);
 }
 function safeError(error) {
     return error instanceof Error ? safeLogValue(error.message) : safeLogValue(String(error));

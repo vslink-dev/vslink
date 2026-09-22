@@ -1,7 +1,7 @@
 {
   "name": "vslink-copilot",
   "displayName": "Vslink Copilot",
-  "description": "Connect one VS Code workspace to your paired browser and access its GitHub Copilot conversations while connected.",
+  "description": "Access your workspace's GitHub Copilot conversations from a paired browser. Requires a paid VSLink subscription; no free trial.",
   "version": "1.1.0",
   "publisher": "vslink",
   "icon": "media/icon.png",
@@ -23,12 +23,12 @@
     "phone"
   ],
   "engines": {
-    "vscode": "^1.93.0"
+    "vscode": "^1.137.0"
   },
   "categories": [
     "Other"
   ],
-  "pricing": "Trial",
+  "pricing": "Free",
   "activationEvents": [
     "onView:remoteChatControl.sidebar",
     "onCommand:remoteChatControl.connectCloud",
@@ -94,7 +94,7 @@
   },
   "scripts": {
     "check": "node testing/check-source.js",
-    "test": "npm run check && node testing/test-new-chat.js && node testing/test-connect-dialog.js && node testing/test-sidebar.js"
+    "test": "npm run check && node testing/test-parser-security.js && node testing/test-linking.js && node testing/test-pairing-flow.js && node testing/test-new-chat.js && node testing/test-send-confirmation.js && node testing/test-relay-security.js && node testing/test-connect-dialog.js && node testing/test-sidebar.js"
   },
   "dependencies": {
     "ws": "8.21.3"

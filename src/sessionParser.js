@@ -1,310 +1,189 @@
-"use strict";
-exports.reconstructJsonl = reconstructJsonl;
-exports.parseSessionContent = parseSessionContent;
-const MAX_MESSAGES = 200;
+'use strict';
 const MAX_MESSAGE_CHARS = 100000;
-const HIDDEN_RESPONSE_KINDS = new Set([
-    'thinking',
-    'toolinvocationserialized',
-    'progresstaskserialized',
-    'texteditgroup',
-    'inlinereference',
-    'mcpserversstarting',
-    'confirmation',
-    'commandbutton',
-    'warning',
-    'reference',
-    'citation',
-    'codeblockuri',
-    'filetree'
-]);
-function pathKey(value) {
-    return typeof value === 'number' ? value : (/^\d+$/.test(value) ? Number(value) : value);
-}
-function getNested(root, path) {
-    let current = root;
-    for (const part of path) {
-        if (current === null || current === undefined)
-            return undefined;
-        current = current[pathKey(part)];
+const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function validatePath(path) {
+    if (!Array.isArray(path) || !path.length || path.length > 100) throw new Error('Invalid Copilot JSONL operation path.');
+    for (const key of path) {
+        if ((typeof key !== 'string' && !(Number.isSafeInteger(key) && key >= 0)) ||
+            UNSAFE_KEYS.has(key) || key === '') throw new Error('Unsafe or invalid Copilot JSONL path segment.');
     }
-    return current;
 }
-function setNested(root, path, value) {
-    if (!path.length)
-        return;
-    let current = root;
-    for (let index = 0; index < path.length - 1; index++) {
-        const key = pathKey(path[index]);
-        const next = pathKey(path[index + 1]);
-        if (current[key] === null || current[key] === undefined) {
-            current[key] = typeof next === 'number' ? [] : {};
+function propertyKey(object, key, allowAppend = false) {
+    if (!object || typeof object !== 'object') throw new Error('Copilot JSONL path traverses a non-object.');
+    if (Array.isArray(object)) {
+        const index = typeof key === 'number' ? key : /^(0|[1-9]\d*)$/.test(key) ? Number(key) : NaN;
+        if (!Number.isSafeInteger(index) || index < 0 || index >= object.length + (allowAppend ? 1 : 0)) {
+            throw new Error('Copilot JSONL array index is out of range.');
         }
-        current = current[key];
+        return index;
     }
-    current[pathKey(path[path.length - 1])] = value;
+    return key;
 }
-function ensureArray(root, path) {
-    const existing = getNested(root, path);
-    if (Array.isArray(existing))
-        return existing;
-    setNested(root, path, []);
-    return getNested(root, path);
+function parentAt(root, path) {
+    let parent = root;
+    for (const part of path.slice(0, -1)) {
+        const key = propertyKey(parent, part);
+        if (!Object.hasOwn(parent, key)) throw new Error('Copilot JSONL path refers to a missing parent.');
+        parent = parent[key];
+    }
+    return [parent, propertyKey(parent, path.at(-1), true)];
 }
 function splitJsonObjects(content) {
     const objects = [];
-    let start = -1;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
+    let start = -1, depth = 0, inString = false, escaped = false;
     for (let index = 0; index < content.length; index++) {
         const char = content[index];
         if (start < 0) {
-            if (char === '{') {
-                start = index;
-                depth = 1;
-            } else if (!/\s/.test(char)) throw new Error('Invalid JSONL content outside an object.');
+            if (char === '{') { start = index; depth = 1; }
+            else if (!/\s/.test(char)) throw new Error('Invalid JSONL content outside an object.');
             continue;
         }
         if (inString) {
-            if (escaped)
-                escaped = false;
-            else if (char === '\\')
-                escaped = true;
-            else if (char === '"')
-                inString = false;
-            continue;
-        }
-        if (char === '"')
-            inString = true;
-        else if (char === '{')
-            depth++;
-        else if (char === '}' && --depth === 0) {
-            objects.push(content.slice(start, index + 1));
-            start = -1;
-        }
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+        } else if (char === '"') inString = true;
+        else if (char === '{') depth++;
+        else if (char === '}' && --depth === 0) { objects.push(content.slice(start, index + 1)); start = -1; }
     }
     if (start >= 0) throw new Error('Copilot JSONL write is incomplete. Refresh after VS Code finishes writing.');
     if (!objects.length) throw new Error('Copilot JSONL contains no records.');
     return objects;
 }
 function reconstructJsonl(content) {
-    let data = {};
+    let data;
     for (const raw of splitJsonObjects(content)) {
-        let operation;
-        try {
-            operation = JSON.parse(raw);
-        }
-        catch (error) {
-            throw new Error(`Invalid Copilot JSONL record: ${error.message}`, { cause: error });
-        }
-        if (operation.kind === 0 && operation.v && typeof operation.v === 'object') {
-            data = { ...data, ...operation.v };
+        let op;
+        try { op = JSON.parse(raw); }
+        catch (cause) { throw new Error(`Invalid Copilot JSONL record: ${cause.message}`, { cause }); }
+        if (op.kind === 0) {
+            if (!op.v || typeof op.v !== 'object' || Array.isArray(op.v)) throw new Error('Invalid Copilot JSONL initial entry.');
+            data = op.v; // Initial entries replace state, including after compaction.
             continue;
         }
-        if (!Array.isArray(operation.k) || operation.k.length === 0)
-            continue;
-        const path = operation.k;
-        if (operation.kind === 1) {
-            setNested(data, path, operation.v);
-            continue;
-        }
-        if (operation.kind !== 2)
-            continue;
-        const index = typeof operation.i === 'number' ? operation.i : undefined;
-        const current = getNested(data, path);
-        if (index !== undefined) {
-            const target = Array.isArray(current) ? current : ensureArray(data, path);
-            const values = Array.isArray(operation.v) ? operation.v : [operation.v];
-            if (target.length < index)
-                target.length = index;
-            target.splice(index, target.length - index, ...values);
-        }
-        else if (Array.isArray(current)) {
-            const values = Array.isArray(operation.v) ? operation.v : [operation.v];
-            current.push(...values);
-        }
-        else {
-            setNested(data, path, operation.v);
+        if (!data) throw new Error('Copilot JSONL is missing an initial entry.');
+        if (![1, 2, 3].includes(op.kind)) throw new Error('Unsupported Copilot JSONL operation kind.');
+        validatePath(op.k);
+        const [parent, key] = parentAt(data, op.k);
+        if (op.kind === 1) {
+            // An omitted value represents undefined in VS Code's serializer.
+            if (Object.hasOwn(op, 'v')) Object.defineProperty(parent, key, { value: op.v, enumerable: true, configurable: true, writable: true });
+            else delete parent[key];
+        } else if (op.kind === 3) {
+            delete parent[key];
+        } else {
+            // The stored push operation can initialize an optional absent array
+            // or truncate an array with i and no v. Never insert undefined.
+            const current = Object.hasOwn(parent, key) ? parent[key] : undefined;
+            if (current !== undefined && current !== null && !Array.isArray(current)) throw new Error('Copilot JSONL push target is not an array.');
+            const target = current == null ? [] : current;
+            if (Object.hasOwn(op, 'v') && !Array.isArray(op.v)) throw new Error('Copilot JSONL push value must be an array.');
+            if (Object.hasOwn(op, 'i')) {
+                if (!Number.isSafeInteger(op.i) || op.i < 0 || op.i > target.length) throw new Error('Copilot JSONL truncation index is out of range.');
+                target.length = op.i;
+            }
+            if (op.v) for (const item of op.v) target.push(item);
+            Object.defineProperty(parent, key, { value: target, enumerable: true, configurable: true, writable: true });
         }
     }
     return data;
 }
-function normalizeText(value) {
-    if (typeof value !== 'string')
-        return '';
-    return value
-        .replace(/\\r\\n/g, '\n')
-        .replace(/\\n/g, '\n')
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .trim()
-        .slice(0, MAX_MESSAGE_CHARS);
-}
-function collectVisibleText(value) {
-    if (typeof value === 'string')
-        return value ? [value] : [];
-    if (!value || typeof value !== 'object')
-        return [];
-    if (Array.isArray(value))
-        return value.flatMap(collectVisibleText);
-    const result = [];
-    for (const key of ['value', 'text', 'markdown', 'content', 'message', 'parts', 'items']) {
-        if (Object.prototype.hasOwnProperty.call(value, key)) {
-            result.push(...collectVisibleText(value[key]));
-        }
-    }
-    return result;
-}
-function appendFragment(current, fragment) {
-    if (!fragment)
-        return current;
-    if (!current)
-        return fragment;
-    if (fragment === current || current.endsWith(fragment))
-        return current;
-    if (fragment.startsWith(current))
-        return fragment;
-    const maxOverlap = Math.min(current.length, fragment.length, 4000);
-    for (let size = maxOverlap; size >= 1; size--) {
-        if (current.endsWith(fragment.slice(0, size))) {
-            return current + fragment.slice(size);
-        }
-    }
-    return current + fragment;
-}
-function visibleAssistantText(response) {
-    if (!Array.isArray(response))
-        return '';
-    let text = '';
-    for (const item of response) {
-        if (!item || typeof item !== 'object')
-            continue;
-        const kind = String(item.kind || '').toLowerCase();
-        if (HIDDEN_RESPONSE_KINDS.has(kind))
-            continue;
-        if (kind && kind !== 'value' && !kind.includes('markdown'))
-            continue;
-        for (const fragment of collectVisibleText(item.value)) {
-            text = appendFragment(text, fragment);
-        }
-    }
-    return normalizeText(text).replace(/\n{3,}/g, '\n\n');
+function text(value, label) {
+    if (typeof value !== 'string') throw new Error(`${label} is not text.`);
+    if (value.length > MAX_MESSAGE_CHARS) throw new Error(`${label} exceeds the 100,000 character limit; no partial conversation was sent.`);
+    return value.replace(/\r\n?/g, '\n').trim();
 }
 function userText(request) {
-    const direct = request?.message?.text;
-    if (typeof direct === 'string')
-        return normalizeText(direct);
-    const parts = Array.isArray(request?.message?.parts) ? request.message.parts : [];
-    const textPart = parts.find((part) => part?.kind === 'text' && typeof part?.text === 'string');
-    return normalizeText(textPart?.text);
+    if (!request.message || typeof request.message !== 'object') throw new Error('Copilot request has no message.');
+    if (Object.hasOwn(request.message, 'text')) return text(request.message.text, 'Copilot prompt');
+    if (!Array.isArray(request.message.parts)) throw new Error('Copilot message has no text or parts.');
+    // Text parts are a supported stored message form; attachments are not text.
+    return text(request.message.parts.filter(part => part?.kind === 'text').map(part => text(part.text, 'Copilot text part')).join(''), 'Copilot prompt');
 }
-function timestamp(value, fallback) {
-    const number = Number(value);
-    return Number.isFinite(number) && number > 0 ? number : fallback;
+function visibleAssistantText(response) {
+    if (response === undefined) return '';
+    if (!Array.isArray(response)) throw new Error('Copilot response is not an array.');
+    const parts = [];
+    for (const item of response) {
+        if (!item || typeof item !== 'object') throw new Error('Invalid Copilot response part.');
+        // Allow only display markdown, never arbitrary nested fields that may
+        // include hidden reasoning, attachments, or tool payloads.
+        if (item.kind !== undefined && !['value', 'markdownContent', 'markdown'].includes(item.kind)) continue;
+        const value = item.kind === 'markdownContent' ? item.content : item.value;
+        if (typeof value === 'string') parts.push(value);
+        else if (value && typeof value.value === 'string' && value.kind === undefined) parts.push(value.value);
+        else throw new Error('Unsupported Copilot display markdown format.');
+    }
+    return text(parts.join(''), 'Copilot answer');
 }
-function safeMetadataText(value, maxLength = 200) {
-    if (typeof value !== 'string')
-        return undefined;
-    const text = value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
-    return text || undefined;
+function optionalNumber(value, label) {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`Invalid ${label}.`);
+    return value;
 }
-function positiveNumber(value) {
-    const number = Number(value);
-    return Number.isFinite(number) && number > 0 ? number : undefined;
+function optionalText(value, label, max = 200) {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string' || value.length > max) throw new Error(`Invalid or oversized ${label}.`);
+    return value.trim() || undefined;
 }
 function requestPresentation(request) {
-    const metadata = request?.result?.metadata || {};
-    const selectedModel = safeMetadataText(request?.modelId, 120);
-    const resolvedModel = safeMetadataText(metadata.resolvedModel, 120) ||
-        safeMetadataText(metadata.modelId, 120) ||
-        safeMetadataText(request?.resolvedModel, 120);
-    const responseDetails = safeMetadataText(request?.result?.details) ||
-        safeMetadataText(request?.responseDetails);
-    const modelLabel = responseDetails
-        ? safeMetadataText(responseDetails.split(/[\u2022\u00B7]/)[0], 120)
-        : undefined;
-    const creditEstimate = positiveNumber(request?.copilotCredits) ||
-        positiveNumber(metadata.copilotCredits) ||
-        positiveNumber(request?.creditEstimate) ||
-        positiveNumber(metadata.creditEstimate) ||
-        positiveNumber(metadata.credits);
-    return {
-        model: resolvedModel || selectedModel,
-        resolvedModel,
-        modelLabel,
-        responseDetails,
-        creditEstimate,
-        copilotCredits: creditEstimate
-    };
-}
-function sessionStatus(data, messages) {
-    if (Array.isArray(data?.pendingRequests) && data.pendingRequests.length > 0)
-        return 'in-progress';
-    const assistant = [...messages].reverse().find(message => message.role === 'assistant');
-    if (assistant)
-        return assistant.status || 'complete';
-    return messages[messages.length - 1]?.role === 'user' ? 'in-progress' : 'complete';
+    const metadata = request.result?.metadata;
+    if (metadata != null && (typeof metadata !== 'object' || Array.isArray(metadata))) throw new Error('Invalid Copilot result metadata.');
+    const selected = optionalText(request.modelId, 'model ID', 120);
+    // Optional names differ across stored schema versions. Validate every
+    // supplied field; invalid data never selects a substitute field.
+    const models = [metadata?.resolvedModel, metadata?.modelId, request.resolvedModel].map(value => optionalText(value, 'resolved model ID', 120));
+    const details = [request.result?.details, request.responseDetails].map(value => optionalText(value, 'response details'));
+    const credits = [request.copilotCredits, metadata?.copilotCredits, request.creditEstimate, metadata?.creditEstimate, metadata?.credits].map(value => optionalNumber(value, 'credit estimate'));
+    const resolvedModel = models.find(value => value !== undefined);
+    const responseDetails = details.find(value => value !== undefined);
+    const creditEstimate = credits.find(value => value !== undefined);
+    return { model: resolvedModel ?? selected, resolvedModel,
+        modelLabel: responseDetails?.split(/[\u2022\u00B7]/)[0].trim(), responseDetails,
+        creditEstimate, copilotCredits: creditEstimate };
 }
 function parseSessionContent(content, extension, sessionId) {
+    if (!['.jsonl', '.json'].includes(extension)) throw new Error('Unsupported Copilot session format.');
     let data;
-    try {
-        data = extension === '.jsonl' ? reconstructJsonl(content) : JSON.parse(content);
-    }
-    catch (error) {
-        throw new Error(`Cannot parse Copilot session: ${error.message}`, { cause: error });
-    }
-    if (!Array.isArray(data?.requests))
-        throw new Error('Copilot session has no requests array.');
+    try { data = extension === '.jsonl' ? reconstructJsonl(content) : JSON.parse(content); }
+    catch (cause) { throw new Error(`Cannot parse Copilot session: ${cause.message}`, { cause }); }
+    if (!Array.isArray(data?.requests)) throw new Error('Copilot session has no requests array.');
+    const createdAt = optionalNumber(data.creationDate, 'session creation date');
     const messages = [];
-    const createdAt = timestamp(data.creationDate, Date.now());
     let lastModel;
-    for (const request of data.requests.slice(-MAX_MESSAGES)) {
-        if (!request || typeof request !== 'object')
-            continue;
-        const requestTime = timestamp(request.timestamp, createdAt);
-        const prompt = userText(request);
-        if (prompt)
-            messages.push({ role: 'user', text: prompt, timestamp: requestTime, status: 'complete' });
-        const answer = request.result || request.isCanceled
-            ? visibleAssistantText(request.response)
-            : '';
+    let lastResponseStatus;
+    for (const request of data.requests) {
+        if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Invalid Copilot request.');
+        for (const flag of ['isHidden', 'hiddenFromTranscript', 'requestHiddenFromTranscript', 'isCanceled']) {
+            if (request[flag] !== undefined && typeof request[flag] !== 'boolean') throw new Error(`Invalid Copilot ${flag} flag.`);
+        }
+        if (request.isHidden || request.hiddenFromTranscript) continue;
+        const requestTime = optionalNumber(request.timestamp, 'request timestamp');
+        const prompt = request.requestHiddenFromTranscript ? '' : userText(request);
+        const requestId = optionalText(request.requestId, 'request ID');
+        if (request.result != null && (typeof request.result !== 'object' || Array.isArray(request.result))) throw new Error('Invalid Copilot result.');
+        const responseStatus = request.isCanceled ? 'canceled' : (request.result?.error || request.result?.errorDetails) ? 'error' : request.result ? 'complete' : 'in-progress';
+        if (prompt) messages.push({ role: 'user', text: prompt, timestamp: requestTime, status: 'complete', responseStatus, requestId });
+        const answer = request.result || request.isCanceled ? visibleAssistantText(request.response) : '';
+        if (prompt || answer) lastResponseStatus = responseStatus;
         if (answer) {
             const presentation = requestPresentation(request);
-            if (presentation.model)
-                lastModel = presentation.model;
-            const elapsed = Number(request?.result?.timings?.totalElapsed) || 0;
-            const status = request.isCanceled
-                ? 'canceled'
-                : request?.result?.error
-                    ? 'error'
-                    : request.result
-                        ? 'complete'
-                        : 'in-progress';
-            messages.push({
-                role: 'assistant',
-                text: answer,
-                timestamp: requestTime + Math.max(0, elapsed),
-                status,
-                timeline: [{ type: 'text', text: answer }],
-                ...presentation
-            });
+            if (presentation.model) lastModel = presentation.model;
+            const elapsed = optionalNumber(request.result?.timings?.totalElapsed, 'response duration');
+            const responseTime = optionalNumber(request.responseTimestamp, 'response timestamp');
+            messages.push({ role: 'assistant', text: answer,
+                timestamp: responseTime ?? (requestTime !== undefined && elapsed !== undefined ? requestTime + elapsed : undefined),
+                status: responseStatus, requestId, timeline: [{ type: 'text', text: answer }], ...presentation });
         }
     }
-    if (!messages.length)
-        return null;
-    const firstPrompt = messages.find(message => message.role === 'user')?.text || 'Copilot chat';
-    const title = normalizeText(data.customTitle) || firstPrompt.replace(/\s+/g, ' ').slice(0, 80);
-    const last = messages[messages.length - 1];
-    return {
-        sessionId,
-        filePath: '',
-        title,
-        createdAt,
-        lastMessageAt: last.timestamp || createdAt,
-        messages,
-        messageCount: messages.length,
-        lastModel,
-        status: sessionStatus(data, messages)
-    };
+    if (!messages.length) return null;
+    const customTitle = optionalText(data.customTitle, 'session title', MAX_MESSAGE_CHARS);
+    const title = customTitle ?? messages[0].text.replace(/\s+/g, ' ').slice(0, 80);
+    const last = messages.at(-1);
+    if (data.pendingRequests !== undefined && !Array.isArray(data.pendingRequests)) throw new Error('Invalid pending Copilot requests.');
+    const status = data.pendingRequests?.length ? 'in-progress' : lastResponseStatus;
+    return { sessionId, filePath: '', title, createdAt, lastMessageAt: last.timestamp,
+        messages, messageCount: messages.length, lastModel, status };
 }
+module.exports = { reconstructJsonl, parseSessionContent };

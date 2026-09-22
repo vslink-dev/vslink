@@ -26,6 +26,7 @@ class ChatHistoryReader {
         this.onChange = undefined;
         this.fingerprint = '';
         this.inbox = this.emptyInbox();
+        this.lastError = undefined;
     }
     current() {
         return this.inbox;
@@ -66,13 +67,15 @@ class ChatHistoryReader {
         return files.sort((left, right) => right.mtimeMs - left.mtimeMs);
     }
     refresh(force) {
+        const previous = this.inbox;
         try {
             this.refreshFromStorage(force);
         } catch (error) {
             this.fingerprint = '';
+            this.lastError = new Error(`Cannot read Copilot chat: ${error.message}`, { cause: error });
             this.inbox = { ...this.emptyInbox(), error: `Cannot read Copilot chat: ${error.message}` };
-            this.onChange?.(this.inbox);
         }
+        if (this.inbox !== previous) this.onChange?.(this.inbox);
     }
     refreshFromStorage(force) {
         const files = this.sessionFiles();
@@ -84,7 +87,7 @@ class ChatHistoryReader {
         if (!files.length) {
             this.fingerprint = nextFingerprint;
             this.inbox = this.emptyInbox();
-            this.onChange?.(this.inbox);
+            this.lastError = undefined;
             return;
         }
         const sessions = [];
@@ -118,7 +121,7 @@ class ChatHistoryReader {
             throw new Error('Copilot history exceeds the 4 MB relay history limit. VSLink needs paginated history support for this workspace; no partial history was sent.');
         this.fingerprint = nextFingerprint;
         this.inbox = inbox;
-        this.onChange?.(this.inbox);
+        this.lastError = undefined;
     }
 }
 exports.ChatHistoryReader = ChatHistoryReader;
